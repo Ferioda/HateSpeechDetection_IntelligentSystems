@@ -1,0 +1,238 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Import
+```{r}
+library(keras)
+library(utf8)
+```
+
+## Functions
+```{r}
+
+
+clean_data <- function(data){
+  cat("--> Transforming text to lower case...\n")
+  data <- tolower(data)
+  cat("--> Done.\n")
+  cat("--> Checking utf8 encoding and NFC...\n")
+  basic_check(data)
+  cat("--> Removing unwanted words and/or characters...\n")
+  data <- remove_unwanted_ch_nl_and_spaces(data)
+  cat("--> Done.\n")
+  
+  return(data)
+}
+
+remove_unwanted_ch_nl_and_spaces <- function(data){
+  
+  data_wo_unwanted_ch <- gsub("(@[A-Za-z0-9]+)|([^0-9A-Za-z \\t])|(\\w+:\\/\\/\\S+)|http.+?", " ",data)
+  ## Remove single characters
+  data_wo_single_ch <- gsub("\\s+[a-zA-Z]\\s"," ",data_wo_unwanted_ch)
+  ## Remove \n from the text  
+  data_wo_nl <- gsub("[\n]{1,}", " ", data_wo_single_ch)
+  ## remove sequences of more than one space
+  data <- gsub("[ ]{2,}"," ",data_wo_nl)
+  ## Remove starting and ending spaces
+  data <- gsub("(\\s$)|(^\\s)", "", data)
+  return(data)
+  
+}
+
+basic_check <- function(data){
+  # Check encoding
+  test1 <- data[!utf8_valid(data)]
+  
+  #Check character normalization. Specifically, the normalized composed form (NFC)
+  data_q_nfc <- utf8_normalize(data)
+  test2 <- sum(data_q_nfc != data)
+  
+  if (identical(test1, character(0)) && test2 == 0){
+    cat("--> Encoding and NFC check passed.\n")
+  }
+  else{
+    cat("--> Error: Check not passed\nEncoding result: ",test1,"\nCharacter normalization result: ",test2, "\n")
+  }
+}
+
+tokenize_and_pad <- function(data, max_features = 20000, max_length = 140){
+  token <- text_tokenizer(max_features) %>% fit_text_tokenizer(unlist(data['tweet']))
+  text <- texts_to_sequences(token,unlist(data['tweet']))
+  text <- pad_sequences(text,max_length) 
+  return (text)
+}
+
+split_data <- function(text,data){
+  set.seed(101)
+  sample <- sample(nrow(text), size = floor(.80*nrow(data)), replace = F)
+  x_train <- text[sample,]
+  x_test <- text[-sample,]
+  y_train <- data[sample,]$label
+  y_test <- data[-sample,]$label
+  return (list(x_train, x_test, y_train, y_test))
+}
+
+build_model <- function(max_features = 20000, max_length = 140, output_dim = 128, lstm_units = 64, dropout_rate = 0.5, dense_units = 1){
+  model <- keras_model_sequential()
+  model %>%
+  layer_embedding(input_dim = max_features,
+                  output_dim = output_dim,
+                  input_length = max_length) %>%
+  bidirectional(layer_lstm(units = lstm_units)) %>%
+  layer_dropout(rate = dropout_rate) %>%
+  layer_dense(units = dense_units, activation = 'sigmoid')
+
+  model %>% compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = c('accuracy'))
+  return(model)
+}
+```
+## Metrics
+```{r}
+
+recall<- function(CM){
+    TP <- CM[4]
+    FN <- CM[2]
+    rec <- TP/(TP+FN)
+    return(rec)
+}
+
+precision <- function(CM){
+    TP <- CM[4]
+    FP <- CM[3]
+    prec <- TP/(TP+FP)
+    return(prec)
+}
+
+f1 <- function(CM){
+  prec <- precision(CM)
+  rec <- recall(CM)
+  res <- 2 * (prec * rec)/ (prec+rec)
+  return (res)
+}
+
+print_metrics <- function(predictions, y_target){
+
+  y_pred <- ifelse(predictions >0.5,1,0)
+  eq <- y_pred == y_target
+  
+  acc <- sum(eq)/length(eq)
+  
+  # Compute Confusion Matrix
+  CM = table(y_target,y_pred)
+
+  
+  f1s <- f1(CM)
+  prec <- precision(CM)
+  rec <- recall(CM)
+
+  cat("\nAccuracy",format(acc*100, nsmall=2,digits = 4),"%\n")
+  cat("precision",format(prec*100, nsmall=2,digits = 3),"%\n")
+  cat("recall",format(rec*100, nsmall=2,digits = 3),"%\n")
+  cat("f1 score",format(f1s*100, nsmall=2,digits = 3),"%\n\n")
+  cat("Confusion Matrix\n")
+  print(CM)
+  
+}
+```
+
+
+## Load Dataset
+```{r}
+data <- read.csv("./Data/train.csv")
+data <- data[-c(1)]    #drop id column
+head(data['tweet'],n=5)
+```
+
+## Check and clean text data
+```{r}
+data['tweet'] <- lapply(data['tweet'],function(x) clean_data(x))
+head(data['tweet'],n=5)
+```
+
+## Tokenize
+```{r,include = FALSE}
+text <- tokenize_and_pad(data)
+```
+
+## Split training and test set
+```{r}
+splitList <- split_data(text,data)
+x_train <- splitList[[1]]
+x_test <- splitList[[2]]
+y_train <- splitList[[3]]
+y_test <- splitList[[4]]
+```
+
+
+## Build model
+```{r,include=FALSE}
+model <- build_model()
+```
+
+## Train
+```{r}
+batch_size = 1024
+history <- model %>% fit(x_train, y_train, batch_size = batch_size, epochs = 10, validation_split =0.2)
+plot(history)
+```
+
+## Predict 
+```{r}
+predictions <- model %>% predict(x_test)
+
+print_metrics(predictions,y_test)
+
+```
+## Considerations 
+False positives are too much, the model predicts most of the true samples as negative ones. The reason is that our dataset mostly consists of negative samples. To balance classes we can use oversampling techinique.
+
+## Balance classes
+
+```{r}
+train_min <- data[data$label == 1,]
+train_maj <- data[data$label == 0,]
+
+# create a set sampling nrow(train_maj) rows from minority class
+train_min_oversampled <- train_min[sample(nrow(train_min),length(train_maj$label), replace = TRUE),]
+
+cat("Class 1 size: ", dim(train_min_oversampled),"\n")
+cat("Class 0 size: ", dim(train_maj), "\n")
+
+# concatenate the dataframes
+data_over <- rbind(train_min_oversampled,train_maj)
+
+# shuffle the new dataset
+data_over <- data_over[sample(1:nrow(data_over)),]
+cat("Dataset size: ", dim(data_over),"\n")
+```
+
+## Tokenize, Split, Build Model, Train, Predict
+```{r}
+text_over <- tokenize_and_pad(data_over)
+
+splitList <- split_data(text_over,data_over)
+x_train_over <- splitList[[1]]
+x_test_over <- splitList[[2]]
+y_train_over <- splitList[[3]]
+y_test_over <- splitList[[4]]
+
+model <- build_model()
+
+batch_size = 1024
+
+history <- model %>% fit(x_train_over, y_train_over, batch_size = batch_size, epochs = 10, validation_split =0.2)
+plot(history)
+
+predictions <- model %>% predict(x_test_over)
+
+
+print_metrics(predictions,y_test_over)
+
+
+```
+
+
