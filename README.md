@@ -1,5 +1,4 @@
-# Hate Speech Detection 
-# Intelligent Systems
+# Hate Speech Detection Intelligent Systems
 
 This is a short "user's manual" to run the code used to obtain results.
 
