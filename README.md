@@ -9,3 +9,5 @@ In order to run and avoid errors, a directory named "Data" containing the csv fi
 The "utf8","keras" and "tf" packages are required to be installed. 
 
 To reproduce results you can run directly all the cells in RStudio.
+
+The file main_v2.html shows an example of the results obtained
