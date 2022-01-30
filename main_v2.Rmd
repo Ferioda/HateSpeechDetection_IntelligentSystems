@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "Hate Speech Detection"
 output:
   html_document:
     df_print: paged
@@ -9,6 +9,7 @@ output:
 ```{r}
 library(keras)
 library(utf8)
+library(tm)
 ```
 
 ## Functions
@@ -29,16 +30,33 @@ clean_data <- function(data){
 }
 
 remove_unwanted_ch_nl_and_spaces <- function(data){
+  ## Remove usernames (i.e. words starting with '@')
+  data <- gsub(pattern = "@\\w*", " ", data )
   
-  data_wo_unwanted_ch <- gsub("(@[A-Za-z0-9]+)|([^0-9A-Za-z \\t])|(\\w+:\\/\\/\\S+)|http.+?", " ",data)
-  ## Remove single characters
+  ## Remove hashtags
+  data <- gsub(pattern = "#"," ", data)
+  
+  ## Remove word "RT", indicating re-tweet
+  data <- gsub(patter = "\\srt\\s|^rt\\s|\\srt$", " ", data)
+  
+  ## Remove other characters
+  data_wo_unwanted_ch <- gsub("([^A-Za-z \\t])|(\\w+:\\/\\/\\S+)|http.+?", " ",data)
+  
+  ## Remove single letters
   data_wo_single_ch <- gsub("\\s+[a-zA-Z]\\s"," ",data_wo_unwanted_ch)
+  
   ## Remove \n from the text  
   data_wo_nl <- gsub("[\n]{1,}", " ", data_wo_single_ch)
+  
   ## remove sequences of more than one space
   data <- gsub("[ ]{2,}"," ",data_wo_nl)
+  
   ## Remove starting and ending spaces
   data <- gsub("(\\s$)|(^\\s)", "", data)
+  
+  ## Stemming 
+  data <- stemDocument(data,language="en")
+  
   return(data)
   
 }
@@ -59,8 +77,8 @@ basic_check <- function(data){
   }
 }
 
-tokenize_and_pad <- function(data, max_features = 20000, max_length = 140){
-  token <- text_tokenizer(max_features) %>% fit_text_tokenizer(unlist(data['tweet']))
+tokenize_and_pad <- function(data, max_features = 30000, max_length = 100){
+  token <- text_tokenizer(max_features) %>%     fit_text_tokenizer(unlist(data['tweet']))
   text <- texts_to_sequences(token,unlist(data['tweet']))
   text <- pad_sequences(text,max_length) 
   return (text)
@@ -76,7 +94,7 @@ split_data <- function(text,data){
   return (list(x_train, x_test, y_train, y_test))
 }
 
-build_model <- function(max_features = 20000, max_length = 140, output_dim = 128, lstm_units = 64, dropout_rate = 0.5, dense_units = 1){
+build_model <- function(max_features = 30000, max_length = 100, output_dim = 128, lstm_units = 64, dropout_rate = 0.5){
   model <- keras_model_sequential()
   model %>%
   layer_embedding(input_dim = max_features,
@@ -84,7 +102,7 @@ build_model <- function(max_features = 20000, max_length = 140, output_dim = 128
                   input_length = max_length) %>%
   bidirectional(layer_lstm(units = lstm_units)) %>%
   layer_dropout(rate = dropout_rate) %>%
-  layer_dense(units = dense_units, activation = 'sigmoid')
+  layer_dense(units = 1, activation = 'sigmoid')
 
   model %>% compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = c('accuracy'))
   return(model)
@@ -142,8 +160,15 @@ print_metrics <- function(predictions, y_target){
 
 ## Load Dataset
 ```{r}
-data <- read.csv("./Data/train.csv")
-data <- data[-c(1)]    #drop id column
+
+data1 <- read.csv("./Data/train.csv")
+data1 <- data1[-c(1)]    #drop id column
+
+data2 <- read.csv("./Data/train2.csv", sep = ";")
+data2$label <- ifelse(data2$label >0.5,1,0)
+
+data <- rbind(data1,data2)
+
 head(data['tweet'],n=5)
 ```
 
@@ -154,7 +179,7 @@ head(data['tweet'],n=5)
 ```
 
 ## Tokenize
-```{r,include = FALSE}
+```{r,message=FALSE}
 text <- tokenize_and_pad(data)
 ```
 
@@ -169,14 +194,14 @@ y_test <- splitList[[4]]
 
 
 ## Build model
-```{r,include=FALSE}
+```{r, message=FALSE}
 model <- build_model()
 ```
 
 ## Train
 ```{r}
 batch_size = 1024
-history <- model %>% fit(x_train, y_train, batch_size = batch_size, epochs = 10, validation_split =0.2)
+history <- model %>% fit(x_train, y_train, batch_size = batch_size, epochs = 4, validation_split =0.2)
 plot(history)
 ```
 
@@ -193,10 +218,18 @@ False positives are too much, the model predicts most of the true samples as neg
 ## Balance classes
 
 ```{r}
-train_min <- data[data$label == 1,]
-train_maj <- data[data$label == 0,]
 
-# create a set sampling nrow(train_maj) rows from minority class
+#extract train set
+sample <- sample(nrow(data), size = floor(.80*nrow(data)))
+train <- data[sample,]
+
+# keep test set apart
+test <- data[-sample,]
+
+train_min <- train[train$label == 1,]
+train_maj <- train[train$label == 0,]
+
+# create the new set for class 1 sampling rows from class 1 for "nrow(train_maj)" times 
 train_min_oversampled <- train_min[sample(nrow(train_min),length(train_maj$label), replace = TRUE),]
 
 cat("Class 1 size: ", dim(train_min_oversampled),"\n")
@@ -207,30 +240,39 @@ data_over <- rbind(train_min_oversampled,train_maj)
 
 # shuffle the new dataset
 data_over <- data_over[sample(1:nrow(data_over)),]
-cat("Dataset size: ", dim(data_over),"\n")
+cat("Training Dataset size: ", dim(data_over),"\n")
+
 ```
 
 ## Tokenize, Split, Build Model, Train, Predict
 ```{r}
-text_over <- tokenize_and_pad(data_over)
 
-splitList <- split_data(text_over,data_over)
-x_train_over <- splitList[[1]]
-x_test_over <- splitList[[2]]
-y_train_over <- splitList[[3]]
-y_test_over <- splitList[[4]]
+# recombine the dataset (train+test) and tokenize
+split_idx = dim(data_over)[1]
+data_over_full <- rbind(data_over,test)
+end = dim(data_over_full)[1]
+
+text_over <- tokenize_and_pad(data_over_full)
+
+x_train_over <- text_over[1:split_idx,]
+y_train_over <- data_over_full$label[1:split_idx]
+x_test <- text_over[split_idx:end,]
+y_test <- data_over_full$label[split_idx:end]
 
 model <- build_model()
 
-batch_size = 1024
-
-history <- model %>% fit(x_train_over, y_train_over, batch_size = batch_size, epochs = 10, validation_split =0.2)
-plot(history)
-
-predictions <- model %>% predict(x_test_over)
-
-
-print_metrics(predictions,y_test_over)
+#batch_size = 1024
+batch_sizes = c(128,256,512,1024)
+vec_epochs = c(3,5,8,12,15)
+for (epochs in vec_epochs){
+for (batch_size in batch_sizes){ 
+    history <- model %>% fit(x_train_over, y_train_over, batch_size = batch_size, epochs = epochs, validation_split = 0.2)
+    #plot(history)
+    cat("Training with Batch size = ",batch_size, " Epochs = ",epochs)
+    predictions <- model %>% predict(x_test)
+    print_metrics(predictions,y_test)
+  }
+}
 
 
 ```
