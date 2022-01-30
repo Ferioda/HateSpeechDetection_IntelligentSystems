@@ -5,11 +5,15 @@ output:
     df_print: paged
 ---
 
-## Import
+## Imports and constants
 ```{r}
 library(keras)
 library(utf8)
 library(tm)
+
+batch_size <- 128
+epochs <- 3
+
 ```
 
 ## Functions
@@ -200,8 +204,7 @@ model <- build_model()
 
 ## Train
 ```{r}
-batch_size = 1024
-history <- model %>% fit(x_train, y_train, batch_size = batch_size, epochs = 4, validation_split =0.2)
+history <- model %>% fit(x_train, y_train, batch_size = batch_size, epochs = epochs, validation_split =0.2)
 plot(history)
 ```
 
@@ -261,18 +264,13 @@ y_test <- data_over_full$label[split_idx:end]
 
 model <- build_model()
 
-#batch_size = 1024
-batch_sizes = c(128,256,512,1024)
-vec_epochs = c(3,5,8,12,15)
-for (epochs in vec_epochs){
-for (batch_size in batch_sizes){ 
-    history <- model %>% fit(x_train_over, y_train_over, batch_size = batch_size, epochs = epochs, validation_split = 0.2)
-    #plot(history)
-    cat("Training with Batch size = ",batch_size, " Epochs = ",epochs)
-    predictions <- model %>% predict(x_test)
-    print_metrics(predictions,y_test)
-  }
-}
+
+history <- model %>% fit(x_train_over, y_train_over, batch_size = batch_size, epochs = epochs, validation_split = 0.2)
+plot(history)
+
+cat("Training with Batch size = ",batch_size, " Epochs = ",epochs)
+predictions <- model %>% predict(x_test)
+print_metrics(predictions,y_test)
 
 
 ```
